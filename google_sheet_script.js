@@ -1,3 +1,4 @@
+// Ganti dengan ID Spreadsheet dan Nama Sheet Anda
 var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0]; // Gets the first sheet of the active spreadsheet
 
 function doGet(e) {
@@ -18,6 +19,7 @@ function doGet(e) {
       var descColIndex = header.indexOf("Description") + 1;
       var categoryColIndex = header.indexOf("Category") + 1;
       var paymentColIndex = header.indexOf("Payment Method") + 1;
+      var typeColIndex = header.indexOf("Type") + 1;
 
 
       if (dateColIndex === 0 || amountColIndex === 0) {
@@ -60,14 +62,19 @@ function doGet(e) {
 
         if (normalizedRowDate.getTime() === normalizedTargetDate.getTime()) {
           var amount = parseFloat(row[amountColIndex - 1]) || 0;
+          var currentExpenseType = row[typeColIndex - 1]; // Ambil nilai tipe untuk baris ini
+
           dailyExpenses.push({
             description: row[descColIndex - 1] || 'N/A',
             amount: amount,
             category: row[categoryColIndex - 1] || '',
-            payment_method: row[paymentColIndex - 1] || ''
+            payment_method: row[paymentColIndex - 1] || '',
+            type: currentExpenseType || 'N/A', // Gunakan variabel yang sudah didefinisikan
             // Tambahkan field lain jika perlu
           });
-          totalToday += amount;
+          if (currentExpenseType && String(currentExpenseType).toLowerCase() === "expense") { // Cek jika tipe adalah "expense" (case-insensitive)
+            totalToday += amount; // Tambahkan ke total jika kondisi terpenuhi
+          }
         }
       }
 
@@ -79,6 +86,44 @@ function doGet(e) {
       };
       return ContentService.createTextOutput(JSON.stringify(result))
                          .setMimeType(ContentService.MimeType.JSON);
+
+    } else if (action == "calculate_expense_minus_income") { // Menghapus && targetDateStr karena akan menghitung all-time
+      // Action baru untuk menghitung expense - income
+      var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
+      var dataRange = sheet.getDataRange();
+      var values = dataRange.getValues();
+      var header = values[0];
+
+      var dateColIndex = header.indexOf("Tanggal") + 1;
+      // Kolom 'Tanggal' tidak lagi krusial untuk kalkulasi all-time, tapi Amount & Type iya.
+      var amountColIndex = header.indexOf("Amount") + 1;
+      var typeColIndex = header.indexOf("Type") + 1;
+
+      if (amountColIndex === 0 || typeColIndex === 0) { // Hanya Amount dan Type yang krusial untuk kalkulasi ini
+         throw new Error("Kolom 'Amount' atau 'Type' tidak ditemukan di header.");
+      }
+
+      var totalExpenseAllTime = 0;
+      var totalIncomeAllTime = 0;
+      // Tidak perlu targetDate karena ini kalkulasi all-time
+
+      for (var i = 1; i < values.length; i++) {
+        var row = values[i];
+        // Tidak perlu memproses tanggal karena kita mengakumulasi semua data
+
+        var amount = parseFloat(row[amountColIndex - 1]) || 0;
+        var transactionType = String(row[typeColIndex - 1] || '').toLowerCase();
+
+        if (transactionType === "expense") {
+          totalExpenseAllTime += amount;
+        } else if (transactionType === "income") {
+          totalIncomeAllTime += amount;
+        }
+      }
+
+      var expenseMinusIncomeAllTime = totalExpenseAllTime - totalIncomeAllTime;
+      var summaryResult = { status: "success", calculationPeriod: "all_time", totalExpense: totalExpenseAllTime, totalIncome: totalIncomeAllTime, expenseMinusIncome: expenseMinusIncomeAllTime };
+      return ContentService.createTextOutput(JSON.stringify(summaryResult)).setMimeType(ContentService.MimeType.JSON);
 
     } else {
       // Handle other actions or invalid requests
@@ -115,7 +160,8 @@ function doPost(e) {
       amount, // Kolom B: Amount
       data.description, // Kolom C: Description
       data.payment_method, // Kolom D: Payment Method
-      data.category // Kolom E: Category
+      data.category, // Kolom E: Category
+      data.transaction_type
       // Tambahkan kolom lain jika ada
     ]);
 

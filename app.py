@@ -37,30 +37,42 @@ if missing_vars:
 
 # --- Constants for Prompt ---
 PAYMENT_METHODS = "[BCA, Jago, ShopeePay, Gopay, Cash]"
-CATEGORIES = "[Makanan, Bahan Makanan, Transportasi, Belanja Harian, Belanja Online, Tagihan, Hiburan, Buah, Kesehatan]"
+CATEGORIES = "[Makanan, Bahan Makanan, Transportasi, Belanja Harian, Belanja Online, Tagihan, Hiburan, Buah, Kesehatan, Pemasukan]"
 DEFAULT_PAYMENT_METHOD = "Cash"
 
 def build_prompt(user_input):
      return f"""
-Kamu adalah seorang pengurai pengeluaran. Berdasarkan input dari pengguna yang menjelaskan suatu pengeluaran pribadi, ekstrak dan kembalikan hasilnya dalam format JSON saja, dengan kolom berikut:
+Kamu adalah seorang pengurai transaksi keuangan pribadi. Berdasarkan input dari pengguna yang menjelaskan suatu transaksi (pengeluaran atau pemasukan), ekstrak dan kembalikan hasilnya dalam format JSON saja, dengan kolom berikut:
 
-- amount: total pengeluaran dalam Rupiah (bilangan bulat) tanpa tanda mata uang
-- description: deskripsi singkat barang atau jasa
-- payment_method: salah satu dari {PAYMENT_METHODS}, jika tidak di sebutkan gunakan {DEFAULT_PAYMENT_METHOD}
+- transaction_type: "income" jika merupakan pemasukan, "expense" jika merupakan pengeluaran. Jika tidak disebutkan, anggap sebagai "expense".
+- amount: jumlah uang dalam Rupiah (bilangan bulat) tanpa tanda mata uang
+- description: deskripsi singkat transaksi
+- payment_method: salah satu dari {PAYMENT_METHODS}, jika tidak disebutkan gunakan {DEFAULT_PAYMENT_METHOD}
 - category: salah satu dari {CATEGORIES}
 
 Contoh:
+
+Input: "Dapat transferan 500K dari kantor via BCA"
+
+Hanya balas dalam format JSON:
+{{
+  "transaction_type": "income",
+  "amount": 500000,
+  "description": "transferan dari kantor",
+  "payment_method": "BCA",
+  "category": "Pemasukan"
+}}
 
 Input: "25K nasi goreng via ShopeePay"
 
 Hanya balas dalam format JSON:
 {{
+  "transaction_type": "expense",
   "amount": 25000,
   "description": "nasi goreng",
   "payment_method": "ShopeePay",
   "category": "Makanan"
 }}
-
 Sekarang, analisis input berikut dan balas hanya dalam format JSON:
 "{user_input}"
 """
@@ -145,7 +157,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # await update.message.reply_text(f"Data yang diekstrak:\n```json\n{json.dumps(extracted_data, indent=2)}\n```", parse_mode='MarkdownV2')
 
             if kirim_ke_gsheet(extracted_data, APP_SCRIPT_URL):
-                await update.message.reply_text(f"✅ Pengeluaran {extracted_data.get('description', 'N/A')} ({extracted_data.get('amount', 'N/A')}) berhasil dicatat!")
+                await update.message.reply_text(f"✅ Data {extracted_data.get('category', 'N/A')} - {extracted_data.get('description', 'N/A')} ({extracted_data.get('amount', 'N/A')}) berhasil dicatat!")
         else:
             logger.warning(f"Could not extract valid JSON from Ollama response: {ollama_text_response}")
             await update.message.reply_text("Maaf, saya tidak bisa mengekstrak informasi pengeluaran dari pesan Anda. Coba format yang berbeda?")
@@ -217,6 +229,48 @@ async def show_daily_summary(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.exception(f"An unexpected error occurred in show_daily_summary: {e}")
         await update.message.reply_text("Maaf, terjadi kesalahan internal saat menampilkan ringkasan harian.")
 
+async def show_all_time_financial_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fetches and displays the all-time financial summary (expense - income)."""
+    chat_id = update.effective_chat.id
+    logger.info(f"Received /sisa_cash command from chat_id {chat_id}")
+
+    get_url = f"{APP_SCRIPT_URL}?action=calculate_expense_minus_income"
+
+    await update.message.reply_text("⏳ Menghitung ringkasan keuangan sepanjang waktu...")
+
+    try:
+        response = requests.get(get_url, timeout=20)
+        response.raise_for_status()
+        summary_data = response.json()
+
+        if summary_data.get("status") == "success":
+            total_expense = summary_data.get("totalExpense", 0)
+            total_income = summary_data.get("totalIncome", 0)
+            expense_minus_income = summary_data.get("expenseMinusIncome", 0)
+
+            message_lines = [
+                "📊 *Ringkasan Keuangan Sepanjang Waktu* 📊\n",
+                f"💰 Total Pemasukan: Rp{total_income:,}",
+                f"💸 Total Pengeluaran: Rp{total_expense:,}",
+            ]
+
+            # Jika expense_minus_income negatif, berarti income > expense
+            # Ini bisa diinterpretasikan sebagai "Kelebihan Pemasukan" atau "Sisa Kas Bersih"
+            message_lines.append(f"🏦 Sisa Cash: Rp{abs(expense_minus_income):,}")
+
+            await update.message.reply_text("\n".join(message_lines), parse_mode='Markdown')
+        else:
+            error_message = summary_data.get("message", "Format respons tidak dikenali.")
+            logger.warning(f"Failed to get all-time financial summary from Apps Script: {error_message}")
+            await update.message.reply_text(f"Gagal mengambil data: {error_message}")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching or parsing all-time financial summary: {e}")
+        await update.message.reply_text("Maaf, terjadi masalah saat mengambil atau memproses data dari Google Sheets.")
+    except Exception as e:
+        logger.exception(f"An unexpected error occurred in show_all_time_financial_summary: {e}")
+        await update.message.reply_text("Maaf, terjadi kesalahan internal saat menampilkan ringkasan keuangan.")
+
 def main() -> None:
     """Starts the bot."""
     logger.info("Starting bot...")
@@ -228,6 +282,9 @@ def main() -> None:
 
     # Add command handler for daily summary
     application.add_handler(CommandHandler("harian", show_daily_summary))
+
+    # Add command handler for all-time financial summary
+    application.add_handler(CommandHandler("sisa_cash", show_all_time_financial_summary))
 
     logger.info("Bot is running...")
     # Run the bot until the user presses Ctrl-C
