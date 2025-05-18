@@ -44,22 +44,23 @@ def build_prompt(user_input):
      return f"""
 Kamu adalah seorang pengurai transaksi keuangan pribadi. Berdasarkan input dari pengguna yang menjelaskan suatu transaksi (pengeluaran atau pemasukan), ekstrak dan kembalikan hasilnya dalam format JSON saja, dengan kolom berikut:
 
-- transaction_type: "income" jika merupakan pemasukan, "expense" jika merupakan pengeluaran. Jika tidak disebutkan, anggap sebagai "expense".
+- transaction_type: "income" jika merupakan pemasukan atau ambil uang dari atm, "expense" jika merupakan pengeluaran. Jika tidak disebutkan, anggap sebagai "expense".
 - amount: jumlah uang dalam Rupiah (bilangan bulat) tanpa tanda mata uang
 - description: deskripsi singkat transaksi
 - payment_method: salah satu dari {PAYMENT_METHODS}, jika tidak disebutkan gunakan {DEFAULT_PAYMENT_METHOD}
-- category: salah satu dari {CATEGORIES}
+- category: salah satu dari {CATEGORIES}, jika transaction_type nya "income", gunakan "Pemasukan"
+
 
 Contoh:
 
-Input: "Dapat transferan 500K dari kantor via BCA"
+Input: "Ambil uang dari atm 500000"
 
 Hanya balas dalam format JSON:
 {{
   "transaction_type": "income",
   "amount": 500000,
-  "description": "transferan dari kantor",
-  "payment_method": "BCA",
+  "description": "Ambil uang dari atm",
+  "payment_method": "Cash",
   "category": "Pemasukan"
 }}
 
@@ -80,7 +81,7 @@ Sekarang, analisis input berikut dan balas hanya dalam format JSON:
 def kirim_ke_gsheet(data_json, webhook_url):
     """Sends data to Google Apps Script Webhook."""
     try:
-        response = requests.post(webhook_url, json=data_json, timeout=10) # Add timeout
+        response = requests.post(webhook_url, json=data_json, timeout=60) # Add timeout
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
         logger.info("✅ Data successfully sent to Google Sheets.")
         return True
@@ -158,9 +159,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if kirim_ke_gsheet(extracted_data, APP_SCRIPT_URL):
                 await update.message.reply_text(f"✅ Data {extracted_data.get('category', 'N/A')} - {extracted_data.get('description', 'N/A')} ({extracted_data.get('amount', 'N/A')}) berhasil dicatat!")
+            else:
+                # Notify user that data was extracted but GSheet saving failed
+                await update.message.reply_text(f"⚠️ Data {extracted_data.get('category', 'N/A')} - {extracted_data.get('description', 'N/A')} ({extracted_data.get('amount', 'N/A')}) berhasil diekstrak, TAPI GAGAL disimpan ke Google Sheets. Mohon periksa log atau coba lagi nanti.")
         else:
             logger.warning(f"Could not extract valid JSON from Ollama response: {ollama_text_response}")
-            await update.message.reply_text("Maaf, saya tidak bisa mengekstrak informasi pengeluaran dari pesan Anda. Coba format yang berbeda?")
+            await update.message.reply_text("Maaf, saya tidak bisa mengekstrak informasi transaksi dari pesan Anda. Coba format yang berbeda?")
 
     except requests.exceptions.Timeout:
         logger.error(f"Timeout connecting to Ollama API at {OLLAMA_URL}")
